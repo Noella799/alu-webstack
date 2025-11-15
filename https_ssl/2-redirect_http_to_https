@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Configure HAProxy to redirect HTTP (80) to HTTPS (443)
+
+set -e
+
+# Install haproxy and openssl if not already installed
+apt-get update -y
+apt-get install -y haproxy openssl
+
+# Ensure cert directory exists
+mkdir -p /etc/haproxy/certs
+
+CERT_PEM="/etc/haproxy/certs/www.uwera.tech.pem"
+CERT_KEY="/etc/haproxy/certs/www.uwera.tech.key"
+CERT_CRT="/etc/haproxy/certs/www.uwera.tech.crt"
+
+# If the combined PEM doesn't exist, create a self-signed certificate
+# (If you've already placed a real cert at CERT_PEM, this block is skipped)
+if [ ! -f "$CERT_PEM" ]; then
+    echo "Creating self-signed certificate for www.uwera.tech..."
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$CERT_KEY" \
+        -out "$CERT_CRT" \
+        -subj "/CN=www.uwera.tech"
+
+    cat "$CERT_KEY" "$CERT_CRT" > "$CERT_PEM"
+fi
+
+# Make sure haproxy is enabled (on some systems it's disabled by default)
+if [ -f /etc/default/haproxy ]; then
+    if grep -q '^ENABLED=0' /etc/default/haproxy; then
+        sed -i 's/^ENABLED=0/ENABLED=1/' /etc/default/haproxy
+    fi
+fi
+
+# Write HAProxy configuration:
+# - Port 80: redirect everything to HTTPS
+# - Port 443: terminate SSL and send traffic to backend servers
+cat > /etc/haproxy/haproxy.cfg << 'EOF'
+global
+    log /dev/log    local0
+    log /dev/log    local1 notice
+    chroot /var/lib/haproxy
+    user haproxy
+    group haproxy
+    daemon
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+    tune.ssl.default-dh-param 2048
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    timeout connect 5000
+    timeout client  50000
+    timeout server  50000
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
+
+# HTTP frontend on port 80: redirect to HTTPS
+frontend http_in
+    bind *:80
+    mode http
+    redirect scheme https code 301
+
+# HTTPS frontend on port 443 with SSL termination
+frontend https_in
+    bind *:443 ssl crt /etc/haproxy/certs/www.uwera.tech.pem
+    mode http
+    option forwardfor
+    http-response add-header X-Served-By %H
+    default_backend web_backends
+
+backend web_backends
+    mode http
+    balance roundrobin
+    option httpchk GET /
+    server web-01 13.218.25.33:80 check
+    server web-02 54.197.181.3:80 check
+EOF
+
+# Validate HAProxy configuration
+haproxy -c -f /etc/haproxy/haproxy.cfg
+
+# Restart haproxy in a way that works without systemd
+if command -v service >/dev/null 2>&1; then
+    service haproxy restart || true
+elif command -v systemctl >/dev/null 2>&1; then
+    systemctl restart haproxy || true
+fi
+
