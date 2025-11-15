@@ -1,10 +1,12 @@
 global
     log /dev/log    local0
     log /dev/log    local1 notice
+    chroot /var/lib/haproxy
+    user haproxy
+    group haproxy
     daemon
-    maxconn 2048
-
-    # Enable SSL
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
     tune.ssl.default-dh-param 2048
 
 defaults
@@ -15,20 +17,32 @@ defaults
     timeout connect 5000
     timeout client  50000
     timeout server  50000
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
 
-frontend https_in
-    bind *:443 ssl crt /etc/letsencrypt/live/www.ineza.tech/fullchain.pem crt /etc/letsencrypt/live/www.ineza.tech/privkey.pem
-    mode http
-    option forwardfor
-    default_backend webservers
-
+# HTTP frontend on port 80: redirect to HTTPS
 frontend http_in
     bind *:80
-    redirect scheme https if !{ ssl_fc }
+    mode http
+    redirect scheme https code 301
 
+# HTTPS frontend on port 443 with SSL termination
+frontend https_in
+    bind *:443 ssl crt /etc/ssl/certs/holbertonschool.pem
+    mode http
+    option forwardfor
+    http-response add-header X-Served-By %H
+    default_backend web_backends
 
-backend webservers
+backend web_backends
     mode http
     balance roundrobin
-    server web01 54.234.228.94:80 check
-    server web02 3.82.113.10:80 check
+    option httpchk GET /
+    server web-01 13.218.25.33:80 check
+    server web-02 54.197.181.3:80 check
+

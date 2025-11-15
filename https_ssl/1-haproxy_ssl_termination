@@ -89,10 +89,10 @@ EOF
 # Validate HAProxy configuration
 haproxy -c -f /etc/haproxy/haproxy.cfg
 
-# Restart haproxy depending on init system
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart haproxy || true
-else
+# Restart haproxy in a way that works without systemd
+if command -v service >/dev/null 2>&1; then
     service haproxy restart || true
+elif command -v systemctl >/dev/null 2>&1; then
+    systemctl restart haproxy || true
 fi
 
