@@ -1,27 +1,36 @@
 #!/usr/bin/env bash
-# Configure HAProxy with HTTPS termination on port 443
+# Configure HAProxy with HTTPS SSL termination on port 443
 
 set -e
 
-# Install haproxy and openssl if not present
+# Install haproxy and openssl if not already installed
 apt-get update -y
 apt-get install -y haproxy openssl
 
-# Make sure cert directory exists
+# Ensure cert directory exists
 mkdir -p /etc/haproxy/certs
 
-# If your certificate is not already there, this block will create a self-signed one.
-# If you SCP your real cert into /etc/haproxy/certs/www.uwera.tech.pem
-# before running this, the 'if' will just skip generation.
-if [ ! -f /etc/haproxy/certs/www.uwera.tech.pem ]; then
+CERT_PEM="/etc/haproxy/certs/www.uwera.tech.pem"
+CERT_KEY="/etc/haproxy/certs/www.uwera.tech.key"
+CERT_CRT="/etc/haproxy/certs/www.uwera.tech.crt"
+
+# If the combined PEM doesn't exist, create a self-signed certificate
+# (If you've already placed a real cert at CERT_PEM, this block is skipped)
+if [ ! -f "$CERT_PEM" ]; then
+    echo "Creating self-signed certificate for www.uwera.tech..."
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout /etc/haproxy/certs/www.uwera.tech.key \
-        -out /etc/haproxy/certs/www.uwera.tech.crt \
+        -keyout "$CERT_KEY" \
+        -out "$CERT_CRT" \
         -subj "/CN=www.uwera.tech"
 
-    cat /etc/haproxy/certs/www.uwera.tech.key \
-        /etc/haproxy/certs/www.uwera.tech.crt \
-        > /etc/haproxy/certs/www.uwera.tech.pem
+    cat "$CERT_KEY" "$CERT_CRT" > "$CERT_PEM"
+fi
+
+# Make sure haproxy is enabled (on some systems it's disabled by default)
+if [ -f /etc/default/haproxy ]; then
+    if grep -q '^ENABLED=0' /etc/default/haproxy; then
+        sed -i 's/^ENABLED=0/ENABLED=1/' /etc/default/haproxy
+    fi
 fi
 
 # Write HAProxy configuration
@@ -53,7 +62,7 @@ defaults
     errorfile 503 /etc/haproxy/errors/503.http
     errorfile 504 /etc/haproxy/errors/504.http
 
-# HTTP on port 80
+# HTTP frontend on port 80
 frontend http_in
     bind *:80
     mode http
@@ -61,7 +70,7 @@ frontend http_in
     http-response add-header X-Served-By %H
     default_backend web_backends
 
-# HTTPS on port 443 with SSL termination
+# HTTPS frontend on port 443 with SSL termination
 frontend https_in
     bind *:443 ssl crt /etc/haproxy/certs/www.uwera.tech.pem
     mode http
@@ -77,7 +86,13 @@ backend web_backends
     server web-02 54.197.181.3:80 check
 EOF
 
-# Check config and restart haproxy
+# Validate HAProxy configuration
 haproxy -c -f /etc/haproxy/haproxy.cfg
-systemctl restart haproxy
+
+# Restart haproxy depending on init system
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart haproxy || true
+else
+    service haproxy restart || true
+fi
 
